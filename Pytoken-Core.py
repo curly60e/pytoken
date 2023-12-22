@@ -12,9 +12,17 @@ import threading
 import shutil
 import sys
 import os
+import datetime
 
 shutdown_flag = threading.Event()
 # Funciones de utilidad
+
+def debug_log(message):
+    """ Escribe un mensaje de depuración en un archivo """
+    with open("pytoken.debug", "a") as debug_file:
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        debug_file.write(f"{timestamp} - {message}\n")
+
 def sha256_hash(input_data):
     sha256 = hashlib.sha256()
     sha256.update(input_data.encode())
@@ -23,7 +31,7 @@ def sha256_hash(input_data):
 def simple_bitcoin_mining_simulation(input_data, difficulty):
     nonce = 0
     target = '0' * difficulty
-    while True:
+    while not interrupted:
         data_nonce_combo = input_data + str(nonce)
         hash_result = hashlib.sha256(data_nonce_combo.encode()).hexdigest()
         if hash_result.startswith(target):
@@ -83,16 +91,23 @@ class Node:
         self.client_sockets = []
         self.blockchain = blockchain
         self.is_synchronized = False  # Añadido: estado de sincronización
+        self.threads = []  # Lista para mantener un seguimiento de los hilos
+
+    def is_synchronized(self):
+        # Implementación de la lógica de sincronización
+        # Retorna True si el nodo está sincronizado, False en caso contrario
+        # Aquí va la lógica específica
+        return self._is_synchronized
 
     def synchronize_with_network(self):
         if not self.is_synchronized:
-            print("Sincronizando con la red...")
+            debug_log("Iniciando sincronización con la red...")
             # Aquí va el código para obtener los bloques faltantes
             # Por ejemplo, podrías enviar una solicitud a tus peers
             self.request_missing_blocks()
             # Después de recibir y verificar los bloques, actualiza el estado
             self.is_synchronized = True
-            print("Sincronización completada.")
+            debug_log("Sincronización completada.")
 
     def request_missing_blocks(self):
         # Implementa la lógica para solicitar y recibir bloques faltantes
@@ -109,14 +124,16 @@ class Node:
         threading.Thread(target=self.accept_connections).start()
 
     def accept_connections(self):
-        while not shutdown_flag.is_set():
+        while not shutdown_flag.is_set() and not interrupted:
             client_socket, addr = self.server_socket.accept()
             print(f"Connection from {addr}")
             self.client_sockets.append(client_socket)
-            threading.Thread(target=self.handle_client, args=(client_socket, addr)).start()
+            new_thread = threading.Thread(target=self.handle_client, args=(client_socket, addr))
+            new_thread.start()
+            self.threads.append(new_thread)  # Añadir el hilo a la lista
 
     def handle_client(self, client_socket, addr):
-        while not shutdown_flag.is_set():
+        while not shutdown_flag.is_set() and not interrupted:
             try:
                 message = client_socket.recv(1024).decode('utf-8')
                 if message:
@@ -134,7 +151,9 @@ class Node:
             peer_socket.connect((peer_host, peer_port))
             self.client_sockets.append(peer_socket)
             print(f"Connected to peer {peer_host}:{peer_port}")
+            debug_log(f"Conectado al nodo {peer_host}:{peer_port}")
         except ConnectionRefusedError:
+            debug_log(f"Error de conexión con {peer_host}:{peer_port}")
             print(f"Connection to {peer_host}:{peer_port} refused. Is the peer node running?")
 
 # Clases de Blockchain
@@ -175,6 +194,7 @@ class BlockchainFileManager:
             shutil.move(temp_path, self.filename)
         except Exception as e:
             print(f"Error al guardar en el archivo {self.filename}: {e}")
+            debug_log(f"Error: {e}")
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
@@ -224,15 +244,19 @@ class PyTokenBlockchain:
             self.difficulty = max(1, round(new_difficulty))
 
     def save_to_file(self, file_manager):
-        data = {
-            "wallets": {addr: wallet.to_dict() for addr, wallet in self.wallets.items()},
-            "total_mined": PyTokenBlockchain.total_mined,
-            "block_count": self.block_count,
-            "last_hash": self.last_hash,
-            "difficulty": self.difficulty,
-            "blocks": self.blocks
-        }
-        file_manager.save(data)
+        try:
+            data = {
+                "wallets": {addr: wallet.to_dict() for addr, wallet in self.wallets.items()},
+                "total_mined": PyTokenBlockchain.total_mined,
+                "block_count": self.block_count,
+                "last_hash": self.last_hash,
+                "difficulty": self.difficulty,
+                "blocks": self.blocks
+            }
+            file_manager.save(data)
+            debug_log("Guardando estado de la blockchain")
+        except Exception as e:
+            debug_log(f"Error al guardar la blockchain: {e}")
 
     def load_from_file(self, file_manager):
         data = file_manager.load()
@@ -293,6 +317,7 @@ class PyTokenMiner:
             nonce, hash_result = simple_bitcoin_mining_simulation(input_data, difficulty)
             end_time = time.time()
             mining_time = end_time - start_time
+            debug_log(f"Minando bloque {block_count}")
 
             # Obtener recompensa de minería actual
             mining_reward = self.blockchain.get_mining_reward()
@@ -379,20 +404,34 @@ def init_colors():
         curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
         # Agrega más pares de colores según sea necesario
 
-def clean_up_resources():
-    # Asegurar que todos los recursos se cierran adecuadamente
-    print("Cerrando recursos...")
+interrupted = False
 
 def signal_handler(sig, frame):
+    global interrupted
+    if interrupted:
+        return  # Evitar múltiples llamadas
+    interrupted = True
     print("Guardando el estado y cerrando...")
-    shutdown_flag.set()  # Indica que el programa debe detenerse
+    shutdown_flag.set()  # Indica a los hilos que deben detenerse
     try:
-        file_manager.save(blockchain.to_dict())  # Asegúrate de convertir blockchain a un diccionario si es necesario
+        file_manager.save(blockchain.to_dict())  # Guardar estado de la blockchain
     except Exception as e:
         print(f"Error al guardar la blockchain: {e}")
     finally:
         clean_up_resources()
         sys.exit(0)
+
+def clean_up_resources():
+    print("Cerrando recursos...")
+    # Cerrar el socket del servidor
+    if node.server_socket:
+        node.server_socket.close()
+    # Cerrar todos los sockets de cliente
+    for client_socket in node.client_sockets:
+        client_socket.close()
+    # Esperar a que todos los hilos terminen
+    for thread in node.threads:
+        thread.join()
 
 def main(stdscr):
     # Inicializar colores y configuraciones de curses
@@ -416,26 +455,30 @@ def main(stdscr):
 
     miner = PyTokenMiner(blockchain, wallet_manager)
 
-    # Bucle principal
-    try:
-        while not shutdown_flag.is_set():
-            # Realizar minería dentro del bucle controlado por shutdown_flag
-            miner.mine_block_with_curses(stdscr, mining_win, wallet_win, wallet_manager, blockchain.difficulty, 600, 10, file_manager)
+    # Verificar la sincronización antes de iniciar la minería
+    if node.is_synchronized:
+        print("Nodo sincronizado, iniciando minería...")
+        try:
+            while not shutdown_flag.is_set() and not interrupted:
+                # Realizar minería dentro del bucle controlado por shutdown_flag
+                miner.mine_block_with_curses(stdscr, mining_win, wallet_win, wallet_manager, blockchain.difficulty, 600, 10, file_manager)
+        finally:
+            # Asegurarse de que todos los recursos se cierren adecuadamente
+            clean_up_resources()
+    else:
+        print("No se pudo sincronizar con la red. Verifique su conexión y reinicie el nodo.")
 
-    finally:
-        # Asegurarse de que todos los recursos se cierren adecuadamente
-        clean_up_resources()
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
 
-    host, port = '10.101.55.66', 5000
+    host, port = 'localhost', 5000
     file_manager = BlockchainFileManager('pytoken_blockchain.json')
     blockchain = PyTokenBlockchain()
     blockchain.load_from_file(file_manager)
     node = Node(host, port, blockchain)
     node.start_server()
-    node.connect_to_peer('10.101.55.55', 5000)
+    node.connect_to_peer('localhost', 5000)
     node.synchronize_with_network()
 
     curses.wrapper(main)
