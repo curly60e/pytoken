@@ -121,14 +121,14 @@ class Node:
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(5)
         print(f"Node listening on {self.host}:{self.port}")
-        threading.Thread(target=self.accept_connections).start()
+        threading.Thread(target=self.accept_connections, daemon=True).start()
 
     def accept_connections(self):
         while not shutdown_flag.is_set() and not interrupted:
             client_socket, addr = self.server_socket.accept()
             print(f"Connection from {addr}")
             self.client_sockets.append(client_socket)
-            new_thread = threading.Thread(target=self.handle_client, args=(client_socket, addr))
+            new_thread = threading.Thread(target=self.handle_client, args=(client_socket, addr), daemon=True)
             new_thread.start()
             self.threads.append(new_thread)  # Añadir el hilo a la lista
 
@@ -425,6 +425,7 @@ def clean_up_resources():
     print("Cerrando recursos...")
     # Cerrar el socket del servidor
     if node.server_socket:
+        print("Cerrando el server socket...")
         node.server_socket.close()
     # Cerrar todos los sockets de cliente
     for client_socket in node.client_sockets:
