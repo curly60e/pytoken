@@ -13,9 +13,13 @@ import shutil
 import sys
 import os
 import datetime
+import shutil
 
 shutdown_flag = threading.Event()
 # Funciones de utilidad
+
+BLOCKCHAIN_MAIN_FILE = 'pytoken_blockchain.json'
+BLOCKCHAIN_TEMP_FILE = 'pytoken_blockchain_temp.json'
 
 def debug_log(message):
     """ Escribe un mensaje de depuración en un archivo """
@@ -181,29 +185,39 @@ class WalletManager:
                 self.wallets = json.load(file)
 
 class BlockchainFileManager:
-    def __init__(self, filename):
-        self.filename = filename
-
-    def save(self, data):
-        try:
-            import tempfile
-            import shutil
-            temp_fd, temp_path = tempfile.mkstemp()
-            with os.fdopen(temp_fd, 'w') as temp_file:
-                json.dump(data, temp_file, indent=4)
-            shutil.move(temp_path, self.filename)
-        except Exception as e:
-            print(f"Error al guardar en el archivo {self.filename}: {e}")
-            debug_log(f"Error: {e}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+    def __init__(self, main_filename, temp_filename):
+        self.main_filename = main_filename  # Nombre del archivo principal
+        self.temp_filename = temp_filename  # Nombre del archivo temporal
 
     def load(self):
-        if os.path.exists(self.filename):
-            with open(self.filename, 'r') as file:
+        # Primero intenta cargar desde el archivo temporal
+        if os.path.exists(self.temp_filename):
+            with open(self.temp_filename, 'r') as file:
+                return json.load(file)
+        # Si el temporal no existe, carga desde el archivo principal
+        elif os.path.exists(self.main_filename):
+            with open(self.main_filename, 'r') as file:
                 return json.load(file)
         else:
             return None
+
+    def save_temp(self, data):
+        try:
+            temp_fd, temp_path = tempfile.mkstemp()
+            with os.fdopen(temp_fd, 'w') as temp_file:
+                json.dump(data, temp_file, indent=4)
+            shutil.move(temp_path, self.temp_filename)
+        except Exception as e:
+            print(f"Error al guardar en el archivo temporal {self.temp_filename}: {e}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def save_final(self, data):
+        try:
+            with open(self.main_filename, 'w') as file:
+                json.dump(data, file, indent=4)
+        except Exception as e:
+            print(f"Error al guardar en el archivo {self.main_filename}: {e}")
 
 class PyTokenBlockchain:
     MAX_TOKENS = 42_000_000
@@ -243,18 +257,16 @@ class PyTokenBlockchain:
             new_difficulty = self.difficulty * (total_mining_time / (blocks_per_difficulty_adjustment * target_time_per_block))
             self.difficulty = max(1, round(new_difficulty))
 
-    def save_to_file(self, file_manager):
+    def save_to_file(self, file_manager, temp=False):
+        """ Guarda el estado de la blockchain en el archivo especificado. """
         try:
-            data = {
-                "wallets": {addr: wallet.to_dict() for addr, wallet in self.wallets.items()},
-                "total_mined": PyTokenBlockchain.total_mined,
-                "block_count": self.block_count,
-                "last_hash": self.last_hash,
-                "difficulty": self.difficulty,
-                "blocks": self.blocks
-            }
-            file_manager.save(data)
-            debug_log("Guardando estado de la blockchain")
+            data = self.to_dict()
+            if temp:
+                file_manager.save_temp(data)  # Guardar en el archivo temporal
+                debug_log("Guardando estado en el archivo temporal")
+            else:
+                file_manager.save_final(data)  # Guardar en el archivo final
+                debug_log("Guardando estado en el archivo final")
         except Exception as e:
             debug_log(f"Error al guardar la blockchain: {e}")
 
@@ -301,12 +313,12 @@ class PyTokenMiner:
         self.wallet_manager = wallet_manager
         self.wallet_address = self.wallet_manager.create_wallet()
 
-    def mine_block_with_curses(self, stdscr, mining_win, wallet_win, wallet_manager, start_difficulty, target_time_per_block, blocks_per_difficulty_adjustment, blockchain_file):
+    def mine_block_with_curses(self, stdscr, mining_win, wallet_win, wallet_manager, start_difficulty, target_time_per_block, blocks_per_difficulty_adjustment, file_manager):
         curses.curs_set(0)
         difficulty = start_difficulty
         total_mining_time = 0  # Agregar para rastrear el tiempo total de minería
 
-        while PyTokenBlockchain.total_mined < PyTokenBlockchain.MAX_TOKENS:
+        while PyTokenBlockchain.total_mined < PyTokenBlockchain.MAX_TOKENS and not shutdown_flag.is_set() and not interrupted:
             start_time = time.time()  # Definir start_time al comienzo de cada iteración
           # Usar block_count de la blockchain
             block_count = self.blockchain.block_count
@@ -393,7 +405,7 @@ class PyTokenMiner:
                 self.blockchain.difficulty = difficulty
 
                 # Guardar el estado actualizado de la blockchain
-                self.blockchain.save_to_file(blockchain_file)
+                self.blockchain.save_to_file(file_manager, temp=True)
 
             time.sleep(1)  # Pequeña pausa para que la UI sea visible
 
@@ -411,15 +423,16 @@ def signal_handler(sig, frame):
     if interrupted:
         return  # Evitar múltiples llamadas
     interrupted = True
-    print("Guardando el estado y cerrando...")
+    print("Guardando el estado final y cerrando...")
     shutdown_flag.set()  # Indica a los hilos que deben detenerse
     try:
-        file_manager.save(blockchain.to_dict())  # Guardar estado de la blockchain
+        blockchain.save_to_file(file_manager, temp=False)  # Guardar estado final en el archivo principal
     except Exception as e:
         print(f"Error al guardar la blockchain: {e}")
     finally:
         clean_up_resources()
         sys.exit(0)
+
 
 def clean_up_resources():
     print("Cerrando recursos...")
@@ -434,7 +447,7 @@ def clean_up_resources():
     for thread in node.threads:
         thread.join()
 
-def main(stdscr):
+def main(stdscr, blockchain, file_manager, wallet_manager):
     # Inicializar colores y configuraciones de curses
     init_colors()
 
@@ -445,15 +458,6 @@ def main(stdscr):
     mining_win = curses.newwin(height // 2, width, 0, 0)
     wallet_win = curses.newwin(height // 2, width, height // 2, 0)
 
-    # Configuración de blockchain y manejo de archivos
-    blockchain_file = 'pytoken_blockchain.json'
-    wallet_file = 'pytoken_wallet.json'
-    file_manager = BlockchainFileManager(blockchain_file)
-    blockchain = PyTokenBlockchain()
-    blockchain.load_from_file(file_manager)
-    wallet_manager = WalletManager(wallet_file)
-    wallet_manager.load_from_file()
-
     miner = PyTokenMiner(blockchain, wallet_manager)
 
     # Verificar la sincronización antes de iniciar la minería
@@ -461,10 +465,8 @@ def main(stdscr):
         print("Nodo sincronizado, iniciando minería...")
         try:
             while not shutdown_flag.is_set() and not interrupted:
-                # Realizar minería dentro del bucle controlado por shutdown_flag
                 miner.mine_block_with_curses(stdscr, mining_win, wallet_win, wallet_manager, blockchain.difficulty, 600, 10, file_manager)
         finally:
-            # Asegurarse de que todos los recursos se cierren adecuadamente
             clean_up_resources()
     else:
         print("No se pudo sincronizar con la red. Verifique su conexión y reinicie el nodo.")
@@ -473,13 +475,16 @@ def main(stdscr):
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
 
-    host, port = 'localhost', 5000
-    file_manager = BlockchainFileManager('pytoken_blockchain.json')
+    host, port = '10.101.55.66', 5000
+    file_manager = BlockchainFileManager('pytoken_blockchain.json', 'pytoken_blockchain_temp.json')
     blockchain = PyTokenBlockchain()
     blockchain.load_from_file(file_manager)
+    wallet_manager = WalletManager('pytoken_wallet.json')
+    wallet_manager.load_from_file()
+
     node = Node(host, port, blockchain)
     node.start_server()
-    node.connect_to_peer('localhost', 5000)
+    node.connect_to_peer('10.101.55.55', 5000)
     node.synchronize_with_network()
 
-    curses.wrapper(main)
+    curses.wrapper(main, blockchain, file_manager, wallet_manager)
