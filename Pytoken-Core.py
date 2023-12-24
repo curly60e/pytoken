@@ -139,8 +139,7 @@ class Node:
     def start_mining(self):
         """Prepara el minero y lo retorna."""
         print("Preparando el proceso de minado...")
-        miner = PyTokenMiner(self.blockchain, self.wallet_manager)
-        return miner
+        return PyTokenMiner(self.blockchain, self.wallet_manager)
 
     def start_mining_process(self, stdscr):
         height, width = stdscr.getmaxyx()
@@ -222,8 +221,7 @@ class Node:
     def handle_client(self, client_socket, addr):
         while not shutdown_flag.is_set() and not interrupted:
             try:
-                message = client_socket.recv(1024).decode('utf-8')
-                if message:
+                if message := client_socket.recv(1024).decode('utf-8'):
                     request = json.loads(message)
                     self.process_request(request, client_socket)
             except json.JSONDecodeError:
@@ -390,7 +388,6 @@ class PyTokenBlockchain:
         # Reduce a la mitad la recompensa cada 'halving_interval' bloques
         halvings = self.block_count // self.halving_interval
         return self.initial_reward / (2 ** halvings)
-        debug_log("Getting mining reward")
 
     def adjust_difficulty(self, total_mining_time, target_time_per_block, blocks_per_difficulty_adjustment):
         if total_mining_time > 0:
@@ -412,8 +409,7 @@ class PyTokenBlockchain:
             debug_log(f"Error saving blockchain: {e}")
 
     def load_from_file(self, file_manager):
-        data = file_manager.load()
-        if data:
+        if data := file_manager.load():
             # Actualiza el estado de la blockchain con los datos cargados
             self.wallets = {addr: PyTokenWallet.from_dict(wallet) for addr, wallet in data["wallets"].items()}
             PyTokenBlockchain.total_mined = data["total_mined"]
