@@ -86,8 +86,18 @@ def generate_wallet_address():
     bech32_address = bech32.bech32_encode('pbc8sn', data)
     return bech32_address
 
+def send_json_with_delimiter(peer_socket, data_json):
+    data_with_delimiter = data_json + DELIMITER
+    peer_socket.sendall(data_with_delimiter.encode('utf-8'))
+
+def receive_json_with_delimiter(peer_socket):
+    data = ''
+    while not data.endswith(DELIMITER):
+        data += peer_socket.recv(1024).decode('utf-8')
+    return data[:-len(DELIMITER)]
+
 class Node:
-    def __init__(self, host, port, blockchain):
+    def __init__(self, host, port, blockchain, wallet_manager):
         self.host = host
         self.port = port
         self.peers = []  # Lista de otros nodos en la red
@@ -96,28 +106,109 @@ class Node:
         self.blockchain = blockchain
         self.is_synchronized = False  # Añadido: estado de sincronización
         self.threads = []  # Lista para mantener un seguimiento de los hilos
+        self.wallet_manager = wallet_manager
 
-    def is_synchronized(self):
-        # Implementación de la lógica de sincronización
-        # Retorna True si el nodo está sincronizado, False en caso contrario
-        # Aquí va la lógica específica
-        return self._is_synchronized
+    def check_synchronization(self):
+        local_block_height = len(self.blockchain.blocks)
+        for peer_socket in self.client_sockets:
+            try:
+                peer_socket.send(json.dumps({"action": "get_block_height"}).encode('utf-8'))
+                response = peer_socket.recv(1024).decode('utf-8')
+                response_data = json.loads(response)
+
+                peer_block_height = response_data.get("block_height")
+                if peer_block_height is not None and local_block_height < peer_block_height:
+                    self.synchronize_with_network()
+                    return False
+            except Exception as e:
+                debug_log(f"Error al sincronizar con el par: {e}")
+        return True
+
+    def download_blockchain(self, peer_socket):
+        try:
+            # Envía la solicitud
+            send_json_with_delimiter(peer_socket, json.dumps({"action": "download_blockchain"}))
+            response = receive_json_with_delimiter(peer_socket)
+            blockchain_data = json.loads(response)
+            # Procesar blockchain_data...
+        except Exception as e:
+            debug_log(f"Error al descargar la blockchain: {e}")
+
+    def replace_chain(self, new_blocks):
+        if self.is_valid_chain(new_blocks):
+            self.blocks = new_blocks
+            self.block_count = len(new_blocks)
+            self.last_hash = new_blocks[-1]['hash']  # Asumiendo que cada bloque tiene un 'hash'
+            debug_log("Blockchain reemplazada con éxito.")
+        else:
+            debug_log("Blockchain recibida no es válida.")
+
+    def start_mining(self):
+        # Lógica para iniciar el proceso de minado
+        print("Iniciando el proceso de minado...")
+        self.miner = PyTokenMiner(self.blockchain, self.wallet_manager)
+        curses.wrapper(self.start_mining_process)
+
+    def start_mining_process(self, stdscr):
+        height, width = stdscr.getmaxyx()
+        mining_win = curses.newwin(height // 2, width, 0, 0)
+        wallet_win = curses.newwin(height // 2, width, height // 2, 0)
+
+        self.miner.mine_block_with_curses(stdscr, mining_win, wallet_win, self.wallet_manager,
+                                          self.blockchain.difficulty, 600, 10, file_manager)
 
     def synchronize_with_network(self):
-        if not self.is_synchronized:
-            debug_log("Iniciando sincronización con la red...")
-            # Aquí va el código para obtener los bloques faltantes
-            # Por ejemplo, podrías enviar una solicitud a tus peers
-            self.request_missing_blocks()
-            # Después de recibir y verificar los bloques, actualiza el estado
-            self.is_synchronized = True
-            debug_log("Sincronización completada.")
+        """
+        Sincroniza el nodo con la red descargando la cadena de bloques más larga disponible.
+        """
+        print("Iniciando la sincronización con la red...")
+        longest_chain = None
+        max_length = len(self.blockchain.blocks)
 
-    def request_missing_blocks(self):
-        # Implementa la lógica para solicitar y recibir bloques faltantes
         for peer_socket in self.client_sockets:
-            peer_socket.send("Request for missing blocks".encode('utf-8'))
-            # Aquí deberías esperar y procesar la respuesta
+            try:
+                # Solicitar la longitud de la cadena de bloques del par
+                peer_socket.send(json.dumps({"action": "get_block_height"}).encode('utf-8'))
+                response = peer_socket.recv(1024).decode('utf-8')
+                response_data = json.loads(response)
+                peer_block_height = response_data.get("block_height")
+
+                # Si el par tiene una cadena más larga, intentar descargarla
+                if peer_block_height and peer_block_height > max_length:
+                    print(f"Descargando cadena desde el par con altura de bloque {peer_block_height}")
+                    peer_socket.send(json.dumps({"action": "download_blockchain"}).encode('utf-8'))
+                    chain_response = peer_socket.recv(1024 * 1024).decode('utf-8')  # Ajusta el tamaño del buffer si es necesario
+                    peer_chain = json.loads(chain_response)
+
+                    # Verificar y actualizar si la cadena es válida y es la más larga hasta ahora
+                    if self.blockchain.is_valid_chain(peer_chain['blocks']) and len(peer_chain['blocks']) > max_length:
+                        max_length = len(peer_chain['blocks'])
+                        longest_chain = peer_chain['blocks']
+
+            except Exception as e:
+                debug_log(f"Error al sincronizar con el par: {e}")
+
+        # Reemplazar la cadena local si se encontró una cadena más larga válida
+        if longest_chain:
+            self.blockchain.replace_chain(longest_chain)
+            self.file_manager.save_temp({"blocks": longest_chain})  # Guardar en el archivo temp.json
+            debug_log("La cadena de bloques y el archivo temporal se han actualizado con la versión más reciente de la red.")
+        else:
+            debug_log("Ya en posesión de la cadena más larga disponible.")
+
+        print("Sincronización con la red completada.")
+
+        self.start_mining()
+
+    def request_blockchain_info(self):
+        for peer_socket in self.client_sockets:
+            peer_socket.send(json.dumps({"action": "get_block_height"}).encode('utf-8'))
+            response = peer_socket.recv(1024).decode('utf-8')
+            response_data = json.loads(response)
+            peer_block_height = response_data.get("block_height")
+
+            if peer_block_height and peer_block_height > len(self.blockchain.blocks):
+                self.download_blockchain(peer_socket)
 
     def start_server(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -141,12 +232,15 @@ class Node:
             try:
                 message = client_socket.recv(1024).decode('utf-8')
                 if message:
-                    print(f"Received message from {addr}: {message}")
-                    # Aquí puedes agregar lógica para manejar los mensajes
+                    request = json.loads(message)
+                    self.process_request(request, client_socket)
+            except json.JSONDecodeError:
+                print(f"Mensaje no válido recibido de {addr}")
+            except ConnectionResetError:
+                print(f"Conexión reseteada por {addr}")
+                break
             except:
-                # Manejar la desconexión del cliente
-                print(f"Disconnected from {addr}")
-                self.client_sockets.remove(client_socket)
+                print(f"Desconectado de {addr}")
                 break
 
     def connect_to_peer(self, peer_host, peer_port):
@@ -156,9 +250,19 @@ class Node:
             self.client_sockets.append(peer_socket)
             print(f"Connected to peer {peer_host}:{peer_port}")
             debug_log(f"Conectado al nodo {peer_host}:{peer_port}")
-        except ConnectionRefusedError:
-            debug_log(f"Error de conexión con {peer_host}:{peer_port}")
-            print(f"Connection to {peer_host}:{peer_port} refused. Is the peer node running?")
+        except Exception as e:
+            debug_log(f"Error de conexión con {peer_host}:{peer_port}: {e}")
+            print(f"Connection to {peer_host}:{peer_port} refused.")
+
+    def process_request(self, request, client_socket):
+        action = request.get("action")
+        if action == "get_block_height":
+            response = {"block_height": len(self.blockchain.blocks)}
+            client_socket.send(json.dumps(response).encode('utf-8'))
+        elif action == "download_blockchain":
+            blockchain_data = self.blockchain.to_dict()
+            client_socket.send(json.dumps(blockchain_data).encode('utf-8'))
+        # Agregar más acciones según sea necesario
 
 # Clases de Blockchain
 class WalletManager:
@@ -185,36 +289,33 @@ class WalletManager:
                 self.wallets = json.load(file)
 
 class BlockchainFileManager:
-    def __init__(self, main_filename, temp_filename):
-        self.main_filename = main_filename  # Nombre del archivo principal
-        self.temp_filename = temp_filename  # Nombre del archivo temporal
+    def __init__(self, main_file, temp_file):
+        self.main_file = main_file
+        self.temp_file = temp_file
 
     def load(self):
-        # Primero intenta cargar desde el archivo temporal
-        if os.path.exists(self.temp_filename):
-            with open(self.temp_filename, 'r') as file:
+        # Cargar desde el archivo temporal primero
+        if os.path.exists(self.temp_file):
+            with open(self.temp_file, 'r') as file:
                 return json.load(file)
-        # Si el temporal no existe, carga desde el archivo principal
-        elif os.path.exists(self.main_filename):
-            with open(self.main_filename, 'r') as file:
+        # Si no hay archivo temporal, cargar desde el archivo principal
+        elif os.path.exists(self.main_file):
+            with open(self.main_file, 'r') as file:
                 return json.load(file)
         else:
             return None
 
     def save_temp(self, data):
         try:
-            temp_fd, temp_path = tempfile.mkstemp()
-            with os.fdopen(temp_fd, 'w') as temp_file:
+            with open(self.temp_file, 'w') as temp_file:
                 json.dump(data, temp_file, indent=4)
-            shutil.move(temp_path, self.temp_filename)
+            debug_log("Guardando estado en el archivo temporal")
         except Exception as e:
-            print(f"Error al guardar en el archivo temporal {self.temp_filename}: {e}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            debug_log(f"Error al guardar en el archivo temporal {self.temp_file}: {e}")
 
     def save_final(self, data):
         try:
-            with open(self.main_filename, 'w') as file:
+            with open(self.main_file, 'w') as file:  # Usar self.main_file
                 json.dump(data, file, indent=4)
         except Exception as e:
             print(f"Error al guardar en el archivo {self.main_filename}: {e}")
@@ -228,7 +329,7 @@ class PyTokenBlockchain:
         self.block_count = 0  # Contador de bloques
         self.blocks = []  # Lista para almacenar los bloques
         self.last_hash = ""   # Último hash de bloque minado
-        self.difficulty = 1   # Dificultad inicia
+        self.difficulty = 8   # Dificultad inicia
         self.initial_reward = 4.5  # Recompensa inicial por bloque
         self.halving_interval = 4 * 365 * 144  # Cada 4 años en bloques
 
@@ -316,11 +417,22 @@ class PyTokenMiner:
     def mine_block_with_curses(self, stdscr, mining_win, wallet_win, wallet_manager, start_difficulty, target_time_per_block, blocks_per_difficulty_adjustment, file_manager):
         curses.curs_set(0)
         difficulty = start_difficulty
-        total_mining_time = 0  # Agregar para rastrear el tiempo total de minería
+        block_times = []  # Lista para almacenar tiempos de minería de cada bloque
+        init_colors()
+
+        # Obtener dimensiones de la pantalla
+        height, width = stdscr.getmaxyx()
+
+        # Crear ventanas para minería y wallet
+        mining_win = curses.newwin(height // 2, width, 0, 0)
+        wallet_win = curses.newwin(height // 2, width, height // 2, 0)
+
+        # Configuración de minería
+        difficulty = self.blockchain.difficulty
+        total_mining_time = 0
 
         while PyTokenBlockchain.total_mined < PyTokenBlockchain.MAX_TOKENS and not shutdown_flag.is_set() and not interrupted:
-            start_time = time.time()  # Definir start_time al comienzo de cada iteración
-          # Usar block_count de la blockchain
+            start_time = time.time()
             block_count = self.blockchain.block_count
 
             # Minería de un bloque
@@ -331,90 +443,84 @@ class PyTokenMiner:
             mining_time = end_time - start_time
             debug_log(f"Minando bloque {block_count}")
 
-            # Obtener recompensa de minería actual
+            # Actualizar información en las ventanas
+            self.update_mining_window(mining_win, block_count, nonce, hash_result, difficulty, mining_time)
+            self.update_wallet_window(wallet_win, wallet_manager)
+
+            # Minería y actualización de blockchain
             mining_reward = self.blockchain.get_mining_reward()
-
-            # Rastrear el tiempo total de minería de los últimos 2016 bloques
-            total_mining_time += end_time - start_time
-
-            # Usar hash del bloque y nonce para generar ScriptPubKey y ScriptSig
-            script_pub_key = f"ScriptPubKey: {self.wallet_address}"
-            script_sig = f"ScriptSig: {hashlib.sha256(str(nonce).encode() + self.wallet_address.encode()).hexdigest()[:10]}"
-
-            # Crear la información del bloque
-            block_info = {
-                "block_number": self.blockchain.block_count,
-                "difficulty": self.blockchain.difficulty,
-                "hash": hash_result,
-                "nonce": nonce,
-                "script_pub_key": script_pub_key,
-                "script_sig": script_sig
-                # Agregar más información si es necesario
-            }
-
-            # Añadir el bloque a la blockchain incluyendo la dificultad actual
-            self.blockchain.add_block(block_info, self.blockchain.difficulty)
-
-            end_time = time.time()
-            mining_time = end_time - start_time  # Usar start_time y end_time para calcular mining_time
-
-            # Actualizar blockchain y guardar
             self.blockchain.add_reward_to_wallet(wallet_manager, self.wallet_address, mining_reward)
             wallet_manager.save_to_file()
             self.blockchain.block_count += 1
 
-            # Generar un Padding más extenso
-            padding_bits = ''.join([bin(random.randint(0, 255))[2:].rjust(8, '0') for _ in range(50)])
-            padding_lines = [padding_bits[i:i+50] for i in range(0, len(padding_bits), 50)]
+            # Añadir el bloque a la blockchain
+            script_pub_key = f"ScriptPubKey: {self.wallet_address}"
+            script_sig = f"ScriptSig: {hashlib.sha256(str(nonce).encode() + self.wallet_address.encode()).hexdigest()[:10]}"
+            block_info = {
+                "block_number": block_count,
+                "difficulty": difficulty,
+                "hash": hash_result,
+                "nonce": nonce,
+                "script_pub_key": script_pub_key,
+                "script_sig": script_sig
+            }
+            self.blockchain.add_block(block_info, difficulty)
+            file_manager.save_temp(self.blockchain.to_dict())
 
-            # Actualizar la ventana de minería con la información
-            mining_win.clear()
-            mining_win.box()
-            mining_win.addstr(1, 1, f"Mining PyTokens - Block: {block_count}", curses.color_pair(1))
-            mining_win.addstr(2, 1, f"Nonce: {nonce}", curses.color_pair(2))
-            mining_win.addstr(3, 1, f"Hash: {hash_result}", curses.color_pair(2))
-            mining_win.addstr(4, 1, f"Difficulty: {difficulty}", curses.color_pair(2))
-            mining_win.addstr(5, 1, script_pub_key, curses.color_pair(2))
-            mining_win.addstr(6, 1, script_sig, curses.color_pair(2))
-            mining_win.addstr(7, 1, f"Time per Block: {mining_time:.2f} segundos", curses.color_pair(2))  # Línea añadida para el tiempo de minería
-            mining_win.addstr(8, 1, "Padding:", curses.color_pair(2))
+            end_time = time.time()
+            mining_time = end_time - start_time
+            block_times.append(mining_time)  # Agregar tiempo de minería a la lista
 
-            # Mostrar Padding en múltiples líneas
-            for idx, line in enumerate(padding_lines):
-                mining_win.addstr(9 + idx, 1, line, curses.color_pair(2))  # Ajuste del índice para acomodar la nueva línea
-
-            mining_win.refresh()
-
-
-            # Actualizar la ventana de wallet con recuadros
-            wallet_win.clear()
-            wallet_win.box()
-            balance = wallet_manager.wallets[self.wallet_address]["balance"]
-            wallet_info = f"Wallet: {self.wallet_address}, Balance: {balance:.8f} PyTokens"
-            wallet_win.addstr(1, 1, wallet_info, curses.color_pair(1))
-            wallet_win.refresh()
-
-            if block_count % blocks_per_difficulty_adjustment == 0:
-                actual_time_per_block = mining_time / blocks_per_difficulty_adjustment
-                if actual_time_per_block < target_time_per_block:
-                    difficulty += 1
-                elif actual_time_per_block > target_time_per_block:
-                    difficulty = max(1, difficulty - 1)
-                start_time = time.time()
-                # Actualizar la dificultad en la blockchain
+            if len(block_times) == blocks_per_difficulty_adjustment:
+                average_mining_time = sum(block_times) / len(block_times)
+                difficulty = self.adjust_difficulty(average_mining_time, target_time_per_block)  # Cambio aquí
                 self.blockchain.difficulty = difficulty
+                block_times.clear() # Reinicia la lista para el próximo intervalo
 
-                # Guardar el estado actualizado de la blockchain
-                self.blockchain.save_to_file(file_manager, temp=True)
+    def update_mining_window(self, mining_win, block_count, nonce, hash_result, difficulty, mining_time):
+        mining_win.clear()
+        mining_win.box()
+        mining_win.addstr(1, 1, f"Mining PyTokens - Block: {block_count}", curses.color_pair(1))  # Rojo
+        mining_win.addstr(2, 1, f"Nonce: {nonce}", curses.color_pair(2))  # Verde
+        mining_win.addstr(3, 1, f"Hash: {hash_result}", curses.color_pair(3))  # Amarillo
+        mining_win.addstr(4, 1, f"Difficulty: {difficulty}", curses.color_pair(4))  # Azul
+        mining_win.addstr(5, 1, f"Time per Block: {mining_time:.2f} segundos", curses.color_pair(2))
 
-            time.sleep(1)  # Pequeña pausa para que la UI sea visible
+        # Generar un Padding más extenso
+        padding_bits = ''.join([bin(random.randint(0, 255))[2:].rjust(8, '0') for _ in range(50)])
+        padding_lines = [padding_bits[i:i+50] for i in range(0, len(padding_bits), 50)]
+
+        mining_win.addstr(6, 1, "Padding:", curses.color_pair(1))
+
+        # Mostrar Padding en múltiples líneas
+        for idx, line in enumerate(padding_lines):
+            mining_win.addstr(7 + idx, 1, line, curses.color_pair(2))
+
+        mining_win.refresh()
+
+    def update_wallet_window(self, wallet_win, wallet_manager):
+        wallet_win.clear()
+        wallet_win.box()
+        balance = wallet_manager.wallets[self.wallet_address]["balance"]
+        wallet_info = f"Wallet: {self.wallet_address}, Balance: {balance:.8f} PyTokens"
+        wallet_win.addstr(1, 1, wallet_info, curses.color_pair(1))
+        wallet_win.refresh()
+
+    def adjust_difficulty(self, average_mining_time, target_time_per_block):
+        if average_mining_time < target_time_per_block:
+            return self.blockchain.difficulty + 1
+        elif average_mining_time > target_time_per_block:
+            return max(1, self.blockchain.difficulty - 1)
+        return self.blockchain.difficulty
+
 
 def init_colors():
     if curses.has_colors():
         curses.start_color()
         curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
         curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
-        # Agrega más pares de colores según sea necesario
+        curses.init_pair(3, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+        curses.init_pair(4, curses.COLOR_BLUE, curses.COLOR_BLACK)
 
 interrupted = False
 
@@ -482,9 +588,14 @@ if __name__ == "__main__":
     wallet_manager = WalletManager('pytoken_wallet.json')
     wallet_manager.load_from_file()
 
-    node = Node(host, port, blockchain)
+    node = Node(host, port, blockchain, wallet_manager)
     node.start_server()
-    node.connect_to_peer('10.101.55.55', 5000)
+
+    try:
+        node.connect_to_peer('10.101.55.55', 5000)
+    except ConnectionRefusedError:
+        print("No se pudo conectar al nodo. Iniciando minado en modo solitario.")
+
     node.synchronize_with_network()
 
     curses.wrapper(main, blockchain, file_manager, wallet_manager)
