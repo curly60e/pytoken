@@ -15,10 +15,15 @@ import os
 import datetime
 import shutil
 import binascii
+import logging
+import configparser
 from Crypto.PublicKey import RSA
 from Crypto.Hash import SHA256
 from Crypto.Signature import pkcs1_15
 
+# Configuración básica del logger
+logging.basicConfig(filename='pytoken.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+os.system('cls' if os.name == 'nt' else 'clear')
 
 shutdown_flag = threading.Event()
 # Funciones de utilidad
@@ -32,20 +37,43 @@ def debug_log(message):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         debug_file.write(f"{timestamp} - {message}\n")
 
+def save_peer_config(ip, port):
+    config = configparser.ConfigParser()
+    config['Peer'] = {'IP': ip, 'Port': port}
+    with open('connections.conf', 'w') as configfile:
+        config.write(configfile)
+
+def load_peer_config():
+    config = configparser.ConfigParser()
+    config.read('connections.conf')
+    return config['Peer']['IP'], int(config['Peer']['Port'])
+
+def get_peer_info():
+    try:
+        return load_peer_config()
+    except (KeyError, configparser.NoSectionError):
+        # Solicitar IP y puerto si no se encuentra el archivo de configuración
+        ip = input("Ingrese la dirección IP del par: ")
+        port = input("Ingrese el puerto del par: ")
+        save_peer_config(ip, port)
+        return ip, int(port)
+
 def sha256_hash(input_data):
     sha256 = hashlib.sha256()
     sha256.update(input_data.encode())
     return sha256.hexdigest()
 
-def simple_bitcoin_mining_simulation(input_data, difficulty):
+def simple_bitcoin_mining_simulation(input_data, difficulty, timeout=60):
+    start_time = time.time()
     nonce = 0
     target = '0' * difficulty
-    while not interrupted:
+    while time.time() - start_time < timeout:
         data_nonce_combo = input_data + str(nonce)
         hash_result = hashlib.sha256(data_nonce_combo.encode()).hexdigest()
         if hash_result.startswith(target):
             return nonce, hash_result
         nonce += 1
+    return None, None  # Devuelve None si se excede el límite de tiempo
 
 def generate_fake_transactions(num_transactions=5):
     transactions = []
@@ -138,7 +166,7 @@ class Node:
 
     def start_mining(self):
         """Prepara el minero y lo retorna."""
-        print("Preparando el proceso de minado...")
+        #print("Preparando el proceso de minado...")
         return PyTokenMiner(self.blockchain, self.wallet_manager)
 
     def start_mining_process(self, stdscr):
@@ -152,7 +180,7 @@ class Node:
         """
         Sincroniza el nodo con la red descargando la cadena de bloques más larga disponible.
         """
-        print("Iniciando la sincronización con la red...")
+        #print("Iniciando la sincronización con la red...")
         longest_chain = None
         max_length = len(self.blockchain.blocks)
 
@@ -364,7 +392,7 @@ class PyTokenBlockchain:
         self.block_count = 0  # Contador de bloques
         self.blocks = []  # Lista para almacenar los bloques
         self.last_hash = ""   # Último hash de bloque minado
-        self.difficulty = 8   # Dificultad inicia
+        self.difficulty = 5   # Dificultad inicia
         self.initial_reward = 4.5  # Recompensa inicial por bloque
         self.halving_interval = 4 * 365 * 144  # Cada 4 años en bloques
 
@@ -386,6 +414,7 @@ class PyTokenBlockchain:
 
     def get_mining_reward(self):
         # Reduce a la mitad la recompensa cada 'halving_interval' bloques
+        debug_log("Reduce a la mitad la recompensa")
         halvings = self.block_count // self.halving_interval
         return self.initial_reward / (2 ** halvings)
 
@@ -411,6 +440,7 @@ class PyTokenBlockchain:
     def load_from_file(self, file_manager):
         if data := file_manager.load():
             # Actualiza el estado de la blockchain con los datos cargados
+            debug_log("Actualiza el estado de la blockchain con los datos cargados")
             self.wallets = {addr: PyTokenWallet.from_dict(wallet) for addr, wallet in data["wallets"].items()}
             PyTokenBlockchain.total_mined = data["total_mined"]
             self.block_count = data.get("block_count", 0)
@@ -418,6 +448,7 @@ class PyTokenBlockchain:
             self.last_hash = data.get("last_hash", "")
 
             # Actualiza la dificultad basándose en el último bloque guardado
+            debug_log("Actualiza la dificultad basándose en el último bloque guardado")
             if data["blocks"]:
                 last_block = data["blocks"][-1]
                 self.difficulty = last_block["difficulty"]
@@ -426,6 +457,7 @@ class PyTokenBlockchain:
             debug_log("Loading blockchain from final file")
         else:
             # Establecer valores predeterminados si no hay datos cargados
+            debug_log("Establecer vaores predeterminados si no hay datos cargados")
             self.difficulty = 1
             self.blocks = []
             self.block_count = 0
@@ -453,14 +485,17 @@ class PyTokenMiner:
         init_colors()
 
         # Obtener dimensiones de la pantalla
+        debug_log("Obtener dimensiones de la pantalla")
         height, width = stdscr.getmaxyx()
 
         # Crear ventanas para minería y wallet
+        debug_log("Crear ventanas para minería y wallet")
         mining_info_win = curses.newwin(height // 2, width // 2, 0, 0)
         node_info_win = curses.newwin(height // 2, width // 2, 0, width // 2)
         wallet_win = curses.newwin(height // 2, width, height // 2, 0)
 
         # Configuración de minería
+        debug_log("Configuración de minería")
         difficulty = self.blockchain.difficulty
         total_mining_time = 0
 
@@ -469,6 +504,7 @@ class PyTokenMiner:
             block_count = self.blockchain.block_count
 
             # Minería de un bloque
+            debug_log("Minería de un bloque")
             transactions = generate_fake_transactions(num_transactions=1)
             input_data = f"Block {block_count}: {transactions}"
             nonce, hash_result = simple_bitcoin_mining_simulation(input_data, difficulty)
@@ -477,17 +513,20 @@ class PyTokenMiner:
             debug_log(f"Mining block {block_count}")
 
             # Actualizar información en las ventanas
+            debug_log("Actualizar información en las ventanas")
             self.update_mining_window(mining_info_win, block_count, nonce, hash_result, difficulty, mining_time)
             self.update_node_info_window(node_info_win, height, width)
             self.update_wallet_window(wallet_win, wallet_manager)
 
             # Minería y actualización de blockchain
+            debug_log("Minería y actualización de blockchain")
             mining_reward = self.blockchain.get_mining_reward()
             self.blockchain.add_reward_to_wallet(self.wallet_manager, self.wallet_address, mining_reward)
             wallet_manager.save_to_file()
             self.blockchain.block_count += 1
 
             # Añadir el bloque a la blockchain
+            debug_log("Añadir el bloque a la blockchain")
             script_pub_key = f"ScriptPubKey: {self.wallet_address}"
             script_sig = f"ScriptSig: {hashlib.sha256(str(nonce).encode() + self.wallet_address.encode()).hexdigest()[:10]}"
             block_info = {
@@ -519,6 +558,7 @@ class PyTokenMiner:
             with open("pytoken.debug", "r") as debug_file:
                 lines = debug_file.readlines()
                 # Mostrar tantas líneas como sea posible en la ventana
+                debug_log("Mostrar tantas líneas como sea posible en la ventana")
                 for i, line in enumerate(lines[-(height//3-2):], start=1):
                     debug_info_win.addstr(i, 1, line.strip(), curses.color_pair(1))
         except FileNotFoundError:
@@ -527,6 +567,15 @@ class PyTokenMiner:
         debug_info_win.refresh()
 
     def update_mining_window(self, mining_win, block_count, nonce, hash_result, difficulty, mining_time):
+        # Obtener dimensiones de la ventana
+        height, width = mining_win.getmaxyx()
+
+        # Verificar si la ventana es lo suficientemente grande
+        if height < 6 or width < 40:
+            # No actualizar si la ventana es muy pequeña
+            return
+
+        # Limpiar y preparar la ventana
         mining_win.clear()
         mining_win.box()
         mining_win.addstr(1, 1, f"Mining PyTokens - Block: {block_count}", curses.color_pair(1))  # Rojo
@@ -536,12 +585,14 @@ class PyTokenMiner:
         mining_win.addstr(5, 1, f"Time per Block: {mining_time:.2f} seconds", curses.color_pair(2))
 
         # Generar un Padding más extenso
+        debug_log("Generar un Padding más extenso")
         padding_bits = ''.join([bin(random.randint(0, 255))[2:].rjust(8, '0') for _ in range(50)])
         padding_lines = [padding_bits[i:i+50] for i in range(0, len(padding_bits), 50)]
 
         mining_win.addstr(6, 1, "Padding:", curses.color_pair(1))
 
         # Mostrar Padding en múltiples líneas
+        debug_log("Mostrar Padding en múltiples líneas")
         for idx, line in enumerate(padding_lines):
             mining_win.addstr(7 + idx, 1, line, curses.color_pair(2))
 
@@ -573,6 +624,7 @@ class PyTokenMiner:
 
 
 def init_colors():
+    debug_log("Inicialización de colores")
     if curses.has_colors():
         curses.start_color()
         curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
@@ -601,59 +653,118 @@ def signal_handler(sig, frame):
 def clean_up_resources():
     print("Closing resources...")
     # Cerrar el socket del servidor
+    debug_log("Cerrar el socket del servidor")
     if node.server_socket:
         print("Closing server socket...")
         node.server_socket.close()
     # Cerrar todos los sockets de cliente
+    debug_log("Cerrar todos los sockets de cliente")
     for client_socket in node.client_sockets:
         client_socket.close()
     # Esperar a que todos los hilos terminen
+    debug_log("Esperar a que todos los hilos terminen")
     for thread in node.threads:
         thread.join()
 
-def main(stdscr, blockchain, file_manager, wallet_manager):
+# Realizar operaciones de red y minería después de mostrar la interfaz gráfica
+debug_log("Realizar operaciones de red y minería después de mostrar la interfaz gráfica")
+def start_network_operations(stdscr, mining_win, wallet_win, log_win, ip, port, debug_info_win, blockchain, file_manager, wallet_manager, node):
+    # Usar log_win para mostrar mensajes
+    debug_log("Usar log_win para mostrar mensajes")
+    messages = [
+        "Node listening on localhost:5000",
+        f"Intentando conectar con el par {ip}:{port}",
+        "Sincronizando con la red...",
+        "Sincronización completada.",
+        "Preparando el proceso de minado...",
+    ]
+
+    for i, msg in enumerate(messages):
+        log_win.addstr(i + 1, 1, msg)
+        log_win.refresh()
+        time.sleep(0.5)  # Pausa para efecto visual, puede omitirse
+
+        if i == 1:
+            try:
+                node.connect_to_peer(ip, port)
+            except ConnectionRefusedError:
+                log_win.addstr(..., f"La conexión al par {ip}:{port} fue rechazada.")
+                log_win.refresh()
+
+        elif i == 2:
+            debug_log("Simular sincronización")
+            node.synchronize_with_network()
+
+        elif i == 4:
+            debug_log("Crear instancia del minero y simular inicio de minería")
+            miner = node.start_mining()
+            log_win.addstr(i + 2, 1, "Minería iniciada.")
+            log_win.refresh()
+            # Inicia el proceso de minería
+            debug_log("Inicia el proceso de minería")
+            miner.mine_block_with_curses(stdscr, mining_win, wallet_win, wallet_manager, blockchain.difficulty, 600, 10, file_manager, node, debug_info_win)
+    log_win.refresh()
+
+
+def main(stdscr, blockchain, file_manager, wallet_manager, node, ip, port):
     # Inicializar colores y configuraciones de curses
+    debug_log("Inicailizar colores y configuracion de curses")
     init_colors()
+    curses.curs_set(0)  # Ocultar el cursor
+    stdscr.clear()      # Limpiar la pantalla
 
-    # Obtener dimensiones de la pantalla
+    # Crear las ventanas para log, wallet y debug
+    debug_log("Creando ventanas, log, wallet y debug")
     height, width = stdscr.getmaxyx()
+    log_win = curses.newwin(10, width, height - 10, 0)
+    wallet_win = curses.newwin(height - 10, width, 0, 0)
+    mining_win = curses.newwin(height - 10, width, 0, 0)
+    debug_info_win = curses.newwin(height - 10, width, 0, 0)
+    log_win.scrollok(True)
+    wallet_win.scrollok(True)
 
-    # Crear ventanas para minería, wallet y debug info
-    mining_win = curses.newwin(height // 3, width, 0, 0)
-    wallet_win = curses.newwin(height // 3, width, height // 3, 0)
-    debug_info_win = curses.newwin(height // 3, width, 2 * height // 3, 0)
+    # Dibujar bordes y títulos para las ventanas
+    debug_log("Dibujando bordes y títulos para las ventanas")
+    log_win.box()
+    wallet_win.box()
+    log_win.addstr(0, 2, ' Log ')
+    wallet_win.addstr(0, 2, ' Wallet ')
 
-    # Cargar wallet
-    wallet_manager.load_from_file()
+    # Refrescar las ventanas para mostrarlas
+    debug_log("Refrescando ventanas para mostrarlas")
+    stdscr.refresh()
+    log_win.refresh()
+    wallet_win.refresh()
 
-    # Verificar nodos y sincronizar con la cadena más larga
-    node.synchronize_with_network()
+    # Iniciar operaciones de red y minería en un hilo separado
+    debug_log("Iniciando operaciones de red y minería en un hilo separado")
+    network_thread = threading.Thread(target=start_network_operations, args=(stdscr, mining_win, wallet_win, log_win, ip, port, debug_info_win, blockchain, file_manager, wallet_manager, node), daemon=True)
+    network_thread.start()
 
-    # Preparar proceso de minado
-    miner = node.start_mining()
-
-    # Iniciar proceso de minado
-    curses.wrapper(miner.mine_block_with_curses, mining_win, wallet_win, wallet_manager, blockchain.difficulty, 600, 10, file_manager, node, debug_info_win)
+    # Mantener la interfaz gráfica activa mientras el hilo de red está en ejecución
+    debug_log("Mantener la interfaz gráfica activa mientras el hilo de red está en ejecución")
+    while network_thread.is_alive():
+        wallet_win.refresh()
+        time.sleep(0.01)
 
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
 
-    host, port = '10.101.55.66', 5000
-    file_manager = BlockchainFileManager('pytoken_blockchain.json', 'pytoken_blockchain_temp.json')
+    # Obtener la IP y el puerto del par antes de iniciar curses
+    debug_log("Obtener la IP y el puerto de par antes de iniciar curses")
+    ip, port = get_peer_info()
+
+    # Inicialización de las dependencias
+    debug_log("Inicialización de las dependencias")
     blockchain = PyTokenBlockchain()
-    blockchain.load_from_file(file_manager)
+    file_manager = BlockchainFileManager('pytoken_blockchain.json', 'pytoken_blockchain_temp.json')
     wallet_manager = WalletManager('pytoken_wallet.json')
+    node = Node('localhost', port, blockchain, wallet_manager)
+
     wallet_manager.load_from_file()
     wallet_manager.update_wallets_with_keys()
 
-    node = Node(host, port, blockchain, wallet_manager)
-    node.start_server()
-
-    try:
-        node.connect_to_peer('172.81.181.23', 5000)
-    except ConnectionRefusedError:
-        print("Could not connect to pairs. Initiating solo mining.")
-
-
-    curses.wrapper(main, blockchain, file_manager, wallet_manager)
+    # Iniciar curses pasando la instancia de node junto con ip y port a main
+    debug_log("Iniciar curses pasando la instancia de node junto con ip y port a main")
+    curses.wrapper(main, blockchain, file_manager, wallet_manager, node, ip, port)
