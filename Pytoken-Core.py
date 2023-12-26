@@ -684,18 +684,18 @@ def start_network_operations(stdscr, mining_win, wallet_win, log_win, ip, port, 
         log_win.refresh()
         time.sleep(0.5)  # Pausa para efecto visual, puede omitirse
 
-        if i == 1:  # Intentar conectar al par
+        if i == 1:
             try:
                 node.connect_to_peer(ip, port)
             except ConnectionRefusedError:
                 log_win.addstr(..., f"La conexión al par {ip}:{port} fue rechazada.")
                 log_win.refresh()
 
-        if i == 2:  # Simular sincronización
+        elif i == 2:
             debug_log("Simular sincronización")
             node.synchronize_with_network()
 
-        if i == 4:  # Crear instancia del minero y simular inicio de minería
+        elif i == 4:
             debug_log("Crear instancia del minero y simular inicio de minería")
             miner = node.start_mining()
             log_win.addstr(i + 2, 1, "Minería iniciada.")
