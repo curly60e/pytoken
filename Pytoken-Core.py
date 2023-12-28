@@ -28,14 +28,18 @@ os.system('cls' if os.name == 'nt' else 'clear')
 shutdown_flag = threading.Event()
 # Funciones de utilidad
 
+# Variables Globales
+DEBUG_MODE = True  # Cambia a False para deshabilitar los logs de depuración
+
 BLOCKCHAIN_MAIN_FILE = 'pytoken_blockchain.json'
 BLOCKCHAIN_TEMP_FILE = 'pytoken_blockchain_temp.json'
 
 def debug_log(message):
-    """ Escribe un mensaje de depuración en un archivo """
-    with open("pytoken.debug", "a") as debug_file:
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        debug_file.write(f"{timestamp} - {message}\n")
+    if DEBUG_MODE:
+        # Escribe un mensaje de depuración en un archivo
+        with open("pytoken.debug", "a") as debug_file:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            debug_file.write(f"{timestamp} - {message}\n")
 
 def save_peer_config(ip, port):
     config = configparser.ConfigParser()
@@ -63,17 +67,15 @@ def sha256_hash(input_data):
     sha256.update(input_data.encode())
     return sha256.hexdigest()
 
-def simple_bitcoin_mining_simulation(input_data, difficulty, timeout=60):
-    start_time = time.time()
+def simple_bitcoin_mining_simulation(input_data, difficulty):
     nonce = 0
     target = '0' * difficulty
-    while time.time() - start_time < timeout:
+    while True:  # Elimina la verificación del tiempo
         data_nonce_combo = input_data + str(nonce)
         hash_result = hashlib.sha256(data_nonce_combo.encode()).hexdigest()
         if hash_result.startswith(target):
             return nonce, hash_result
         nonce += 1
-    return None, None  # Devuelve None si se excede el límite de tiempo
 
 def generate_fake_transactions(num_transactions=5):
     transactions = []
@@ -479,11 +481,10 @@ class PyTokenMiner:
         self.wallet_address = self.wallet_manager.create_wallet()
 
     def mine_block_with_curses(self, stdscr, mining_win, wallet_win, wallet_manager, start_difficulty, target_time_per_block, blocks_per_difficulty_adjustment, file_manager, node, debug_info_win):
+        debug_log("Iniciando método mine_block_with_curses")
         curses.curs_set(0)
         difficulty = start_difficulty
         block_times = []  # Lista para almacenar tiempos de minería de cada bloque
-        init_colors()
-
         # Obtener dimensiones de la pantalla
         debug_log("Obtener dimensiones de la pantalla")
         height, width = stdscr.getmaxyx()
@@ -494,29 +495,19 @@ class PyTokenMiner:
         node_info_win = curses.newwin(height // 2, width // 2, 0, width // 2)
         wallet_win = curses.newwin(height // 2, width, height // 2, 0)
 
-        # Configuración de minería
-        debug_log("Configuración de minería")
-        difficulty = self.blockchain.difficulty
-        total_mining_time = 0
-
         while PyTokenBlockchain.total_mined < PyTokenBlockchain.MAX_TOKENS and not shutdown_flag.is_set() and not interrupted:
+            debug_log("Iniciando bucle while PyTokenBlockchain")
             start_time = time.time()
             block_count = self.blockchain.block_count
 
             # Minería de un bloque
-            debug_log("Minería de un bloque")
+            debug_log("Iniciando dentro del bucle while PyTokenBlockchain -Mineria de un bloque-")
             transactions = generate_fake_transactions(num_transactions=1)
             input_data = f"Block {block_count}: {transactions}"
             nonce, hash_result = simple_bitcoin_mining_simulation(input_data, difficulty)
             end_time = time.time()
             mining_time = end_time - start_time
             debug_log(f"Mining block {block_count}")
-
-            # Actualizar información en las ventanas
-            debug_log("Actualizar información en las ventanas")
-            self.update_mining_window(mining_info_win, block_count, nonce, hash_result, difficulty, mining_time)
-            self.update_node_info_window(node_info_win, height, width)
-            self.update_wallet_window(wallet_win, wallet_manager)
 
             # Minería y actualización de blockchain
             debug_log("Minería y actualización de blockchain")
@@ -525,30 +516,66 @@ class PyTokenMiner:
             wallet_manager.save_to_file()
             self.blockchain.block_count += 1
 
-            # Añadir el bloque a la blockchain
-            debug_log("Añadir el bloque a la blockchain")
-            script_pub_key = f"ScriptPubKey: {self.wallet_address}"
-            script_sig = f"ScriptSig: {hashlib.sha256(str(nonce).encode() + self.wallet_address.encode()).hexdigest()[:10]}"
-            block_info = {
-                "block_number": block_count,
-                "difficulty": difficulty,
-                "hash": hash_result,
-                "nonce": nonce,
-                "script_pub_key": script_pub_key,
-                "script_sig": script_sig
-            }
-            self.blockchain.add_block(block_info, difficulty)
-            file_manager.save_temp(self.blockchain.to_dict())
+            # Actualización de las ventanas
+            debug_log("Iniciando dentro del bucle while PyTokenBlockchain -Actualización de las ventanas-")
+            try:
+                debug_log("Iniciando colores init_colors")
+                init_colors()
 
-            end_time = time.time()
-            mining_time = end_time - start_time
-            block_times.append(mining_time)  # Agregar tiempo de minería a la lista
+                # Configuración de minería
+                debug_log("Configuración de minería")
+                difficulty = self.blockchain.difficulty
+                total_mining_time = 0
 
-            if len(block_times) == blocks_per_difficulty_adjustment:
-                average_mining_time = sum(block_times) / len(block_times)
-                difficulty = self.adjust_difficulty(average_mining_time, target_time_per_block)  # Cambio aquí
-                self.blockchain.difficulty = difficulty
-                block_times.clear() # Reinicia la lista para el próximo intervalo
+                # Actualizar ventana de minería
+                mining_info_win.clear()
+                self.update_mining_window(mining_info_win, block_count, nonce, hash_result, difficulty, mining_time)
+                mining_info_win.refresh()  # Marcar para refrescar, pero no refrescar aún
+
+                # Actualizar ventana de información del nodo
+                node_info_win.clear()
+                self.update_node_info_window(node_info_win, height, width)
+                node_info_win.refresh()  # Marcar para refrescar
+
+                # Actualizar ventana de wallet
+                wallet_win.clear()
+                self.update_wallet_window(wallet_win, wallet_manager)
+                wallet_win.refresh()  # Marcar para refrescar
+
+                # Refrescar todas las ventanas a la vez
+                curses.doupdate()
+
+                # Añadir el bloque a la blockchain
+                debug_log("Iniciando dentro del bucle while PyTokenBlockchain -Añadir el bloque a la blockchain-")
+                debug_log("Añadir el bloque a la blockchain")
+                script_pub_key = f"ScriptPubKey: {self.wallet_address}"
+                script_sig = f"ScriptSig: {hashlib.sha256(str(nonce).encode() + self.wallet_address.encode()).hexdigest()[:10]}"
+                block_info = {
+                    "block_number": block_count,
+                    "difficulty": difficulty,
+                    "hash": hash_result,
+                    "nonce": nonce,
+                    "script_pub_key": script_pub_key,
+                    "script_sig": script_sig
+                }
+                self.blockchain.add_block(block_info, difficulty)
+                file_manager.save_temp(self.blockchain.to_dict())
+
+                end_time = time.time()
+                mining_time = end_time - start_time
+                debug_log("Iniciando dentro del bucle while PyTokenBlockchain -Agregar tiempo de minería a la lista-")
+                block_times.append(mining_time)  # Agregar tiempo de minería a la lista
+
+                if len(block_times) == blocks_per_difficulty_adjustment:
+                    average_mining_time = sum(block_times) / len(block_times)
+                    difficulty = self.adjust_difficulty(average_mining_time, target_time_per_block)  # Cambio aquí
+                    self.blockchain.difficulty = difficulty
+                    debug_log("Iniciando dentro del bucle while PyTokenBlockchain -Reinicia la lista para el próximo intervalo-")
+                    block_times.clear() # Reinicia la lista para el próximo intervalo
+
+            except Exception as e:
+                # Captura cualquier excepción durante la actualización de las ventanas
+                debug_log(f"Error al actualizar ventanas: {e}")
 
     def update_node_info_window(self, debug_info_win, height, width):
         debug_info_win.clear()
@@ -704,7 +731,6 @@ def start_network_operations(stdscr, mining_win, wallet_win, log_win, ip, port, 
             debug_log("Inicia el proceso de minería")
             miner.mine_block_with_curses(stdscr, mining_win, wallet_win, wallet_manager, blockchain.difficulty, 600, 10, file_manager, node, debug_info_win)
     log_win.refresh()
-
 
 def main(stdscr, blockchain, file_manager, wallet_manager, node, ip, port):
     # Inicializar colores y configuraciones de curses
