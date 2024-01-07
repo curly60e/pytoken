@@ -631,6 +631,7 @@ class PyTokenMiner:
     def update_wallet_window(self, wallet_win, wallet_manager):
         wallet_win.clear()
         wallet_win.box()
+        #wallet_win.erase()
 
         total_balance = 0
         y = 1
@@ -652,6 +653,11 @@ class PyTokenMiner:
             return max(1, self.blockchain.difficulty - 1)
         return self.blockchain.difficulty
 
+
+def update_log_window(log_win, blockchain):
+    log_win.erase()
+    log_win.addstr(1, 1, f"Total tokens minados: {blockchain.total_mined}")
+    log_win.refresh()
 
 def init_colors():
     debug_log("Inicialización de colores")
@@ -737,10 +743,10 @@ def start_network_operations(stdscr, mining_win, wallet_win, log_win, ip, port, 
 
 def main(stdscr, blockchain, file_manager, wallet_manager, node, ip, port):
     # Inicializar colores y configuraciones de curses
-    debug_log("Inicailizar colores y configuracion de curses")
+    debug_log("Inicializar colores y configuración de curses")
     init_colors()
     curses.curs_set(0)  # Ocultar el cursor
-    stdscr.clear()      # Limpiar la pantalla
+    stdscr.nodelay(False)  # Hacer que getch espere la entrada del usuario
 
     # Crear las ventanas para log, wallet y debug
     debug_log("Creando ventanas, log, wallet y debug")
@@ -752,29 +758,40 @@ def main(stdscr, blockchain, file_manager, wallet_manager, node, ip, port):
     log_win.scrollok(True)
     wallet_win.scrollok(True)
 
-    # Dibujar bordes y títulos para las ventanas
-    debug_log("Dibujando bordes y títulos para las ventanas")
-    log_win.box()
-    wallet_win.box()
-    log_win.addstr(0, 2, ' Log ')
-    wallet_win.addstr(0, 2, ' Wallet ')
-
-    # Refrescar las ventanas para mostrarlas
-    debug_log("Refrescando ventanas para mostrarlas")
-    stdscr.refresh()
-    log_win.refresh()
-    wallet_win.refresh()
-
     # Iniciar operaciones de red y minería en un hilo separado
     debug_log("Iniciando operaciones de red y minería en un hilo separado")
     network_thread = threading.Thread(target=start_network_operations, args=(stdscr, mining_win, wallet_win, log_win, ip, port, debug_info_win, blockchain, file_manager, wallet_manager, node), daemon=True)
     network_thread.start()
 
-    # Mantener la interfaz gráfica activa mientras el hilo de red está en ejecución
-    debug_log("Mantener la interfaz gráfica activa mientras el hilo de red está en ejecución")
-    while network_thread.is_alive():
+    while True:
+        key = stdscr.getch()  # Esperar y obtener la tecla presionada
+
+        if key == curses.KEY_ENTER or key in [10, 13]:
+            # Lógica para actualizar la pantalla
+            stdscr.clear()  # Limpiar la pantalla principal
+
+            # Llamar a las funciones de actualización
+            #update_log_window(log_win, blockchain)
+            #update_wallet_window(wallet_win, wallet_manager)
+
+            stdscr.refresh()  # Refrescar la pantalla principal para mostrar los cambios
+
+
+        elif key == ord('q'):  # Permitir salir con 'q'
+            break
+
+        # Refrescar las ventanas regularmente
+        log_win.refresh()
         wallet_win.refresh()
-        time.sleep(0.01)
+        mining_win.refresh()
+        debug_info_win.refresh()
+        time.sleep(0.01)  # Pequeña pausa para evitar uso excesivo de CPU
+
+        # Mantener la interfaz gráfica activa mientras el hilo de red está en ejecución
+        debug_log("Mantener la interfaz gráfica activa mientras el hilo de red está en ejecución")
+        while network_thread.is_alive():
+            wallet_win.refresh()
+            time.sleep(0.01)
 
 
 if __name__ == "__main__":
