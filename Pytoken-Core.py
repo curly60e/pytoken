@@ -766,7 +766,7 @@ def main(stdscr, blockchain, file_manager, wallet_manager, node, ip, port):
     while True:
         key = stdscr.getch()  # Esperar y obtener la tecla presionada
 
-        if key == curses.KEY_ENTER or key in [10, 13]:
+        if key in [curses.KEY_ENTER, 10, 13]:
             # Lógica para actualizar la pantalla
             stdscr.clear()  # Limpiar la pantalla principal
 
