@@ -394,7 +394,7 @@ class PyTokenBlockchain:
         self.block_count = 0  # Contador de bloques
         self.blocks = []  # Lista para almacenar los bloques
         self.last_hash = ""   # Último hash de bloque minado
-        self.difficulty = 5   # Dificultad inicia
+        self.difficulty = 7  # Dificultad inicia
         self.initial_reward = 4.5  # Recompensa inicial por bloque
         self.halving_interval = 4 * 365 * 144  # Cada 4 años en bloques
 
@@ -436,6 +436,8 @@ class PyTokenBlockchain:
             else:
                 file_manager.save_final(data)  # Guardar en el archivo final
                 debug_log("Saving state in final file")
+            debug_log(f"Total tokens mined in the blockchain: {blockchain.total_mined}")
+
         except Exception as e:
             debug_log(f"Error saving blockchain: {e}")
 
@@ -448,6 +450,7 @@ class PyTokenBlockchain:
             self.block_count = data.get("block_count", 0)
             self.blocks = data.get("blocks", [])
             self.last_hash = data.get("last_hash", "")
+            self.difficulty = data.get("difficulty", self.difficulty)
 
             # Actualiza la dificultad basándose en el último bloque guardado
             debug_log("Actualiza la dificultad basándose en el último bloque guardado")
@@ -460,7 +463,7 @@ class PyTokenBlockchain:
         else:
             # Establecer valores predeterminados si no hay datos cargados
             debug_log("Establecer vaores predeterminados si no hay datos cargados")
-            self.difficulty = 1
+            self.difficulty = 5
             self.blocks = []
             self.block_count = 0
             self.wallets = {}
@@ -782,9 +785,9 @@ if __name__ == "__main__":
     ip, port = get_peer_info()
 
     # Inicialización de las dependencias
-    debug_log("Inicialización de las dependencias")
     blockchain = PyTokenBlockchain()
     file_manager = BlockchainFileManager('pytoken_blockchain.json', 'pytoken_blockchain_temp.json')
+    blockchain.load_from_file(file_manager)  # Cargar la blockchain al inicio
     wallet_manager = WalletManager('pytoken_wallet.json')
     node = Node('localhost', port, blockchain, wallet_manager)
 
